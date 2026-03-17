@@ -2,8 +2,8 @@ import streamlit as st
 import time
 import pandas as pd
 import numpy as np
+import os
 from data.loader import inicializar_sistema
-
 
 # =====================================================
 # 🧱 FUNCIÓN MODAL TEMPORAL (CIERRE AUTOMÁTICO)
@@ -58,501 +58,285 @@ def mostrar_modal(tipo, mensaje, duracion=2):
     time.sleep(duracion)
     modal.empty()
 
-
-# =====================================================
-# 🧮 FUNCIONES FINANCIERAS NUEVAS
-# =====================================================
-def calcular_metricas_financieras(datos_originales, resultados_prediccion):
-    """Calcular las 3 métricas financieras críticas"""
-    try:
-        # 1. VALOR DEL INVENTARIO ACTUAL
-        # Usar el último saldo final por SKU
-        inventario_actual = datos_originales.groupby('id_insumo').agg({
-            'saldo final': 'last',
-            'cantidad_fin': 'last',
-            'promedio_fin': 'last'
-        }).reset_index()
-        
-        valor_inventario = inventario_actual['saldo final'].sum()
-        
-        # 2. COSTO TOTAL DE COMPRAS RECOMENDADAS
-        # Unir precios promedio con las predicciones
-        precios_promedio = inventario_actual.set_index('id_insumo')['promedio_fin']
-        
-        resultados_con_precio = resultados_prediccion.copy()
-        resultados_con_precio['precio_promedio'] = resultados_con_precio['id_insumo'].map(precios_promedio)
-        resultados_con_precio['costo_comprar'] = (
-            resultados_con_precio['cantidad_comprar'] * resultados_con_precio['precio_promedio']
-        )
-        
-        costo_compras = resultados_con_precio['costo_comprar'].sum()
-        
-        # 3. RIESGO FINANCIERO POR QUIEBRES
-        # SKUs con stock bajo y alta prioridad
-        skus_alto_riesgo = resultados_con_precio[
-            (resultados_con_precio['prioridad'] == 'ALTA') & 
-            (resultados_con_precio['cantidad_comprar'] > 0)
-        ]
-        
-        riesgo_quiebres = skus_alto_riesgo['costo_comprar'].sum()
-        skus_riesgo = skus_alto_riesgo['id_insumo'].nunique()
-        
-        return {
-            'valor_inventario': valor_inventario,
-            'costo_compras': costo_compras,
-            'riesgo_quiebres': riesgo_quiebres,
-            'skus_riesgo': skus_riesgo,
-            'resultados_con_precio': resultados_con_precio
-        }
-        
-    except Exception as e:
-        st.error(f"Error en cálculos financieros: {e}")
-        return {
-            'valor_inventario': 0,
-            'costo_compras': 0,
-            'riesgo_quiebres': 0,
-            'skus_riesgo': 0,
-            'resultados_con_precio': resultados_prediccion
-        }
-
-
-def mostrar_metricas_financieras(metricas):
-    """Mostrar las métricas financieras en el dashboard"""
-    
-    st.markdown("---")
-    st.subheader("💰 MÉTRICAS FINANCIERAS")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric(
-            "Valor Inventario Actual", 
-            f"${abs(metricas['valor_inventario']):,.2f}",
-            help="Valor total del inventario en stock actual"
-        )
-    
-    with col2:
-        st.metric(
-            "Costo Compras Recomendadas", 
-            "$721,659.81",
-            help="Inversión necesaria para las compras recomendadas"
-        )
-    
-    with col3:
-        st.metric(
-            "Riesgo por Quiebres", 
-            f"${metricas['riesgo_quiebres']:,.2f}",
-            f"{metricas['skus_riesgo']} SKUs",
-            delta_color="inverse",
-            help="Valor en riesgo por stock crítico"
-        )
-    
-    # Análisis por prioridad
-    if 'resultados_con_precio' in metricas:
-        df = metricas['resultados_con_precio']
-        analisis_prioridad = df.groupby('prioridad').agg({
-            'costo_comprar': 'sum',
-            'id_insumo': 'count'
-        }).reset_index()
-        
-
-
 # =====================================================
 # ⚙️ FUNCIONES PRINCIPALES DEL SISTEMA
 # =====================================================
 def generar_predicciones():
-    """Genera predicciones automáticas con mensajes modales"""
+    """Genera predicciones automáticas"""
     with st.spinner("Procesando datos y generando predicciones..."):
         try:
             predictor = st.session_state.predictor
-            datos = st.session_state.datos_cargados
-
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
 
             progress_bar.progress(25)
-            status_text.text("🔄 Transformando datos a formato mensual...")
-            df_mensual = predictor.crear_dataset_mensual(datos)
-
-            if len(df_mensual) == 0:
-                mostrar_modal("error", "No se pudieron crear datos mensuales")
+            status_text.text("🔄 Cargando dataset mensual...")
+            
+            # Cargar dataset mensual
+            ruta_dataset = "dataset/dataset_mensual_generado.xlsx"
+            
+            if os.path.exists(ruta_dataset):
+                df_mensual = pd.read_excel(ruta_dataset)
+                st.success(f"✅ Dataset cargado: {len(df_mensual)} registros")
+            else:
+                st.error(f"❌ No se encontró: {ruta_dataset}")
                 return
 
             progress_bar.progress(50)
-            status_text.text("🎯 Creando características para el modelo...")
+            status_text.text("🎯 Preparando características...")
+            
+            # Preparar features
             df_preparado = predictor.preparar_features(df_mensual)
 
             if len(df_preparado) == 0:
-                mostrar_modal("error", "No hay datos suficientes después de la preparación")
+                mostrar_modal("error", "No hay datos suficientes")
                 return
 
             progress_bar.progress(75)
-            if predictor.model is None:
+            
+            # Entrenar modelo si no está entrenado
+            if predictor.model is None or not predictor.is_trained:
                 status_text.text("🤖 Entrenando modelo...")
-                predictor.entrenar_modelo(df_preparado)
+                modelo, metricas = predictor.entrenar_modelo(df_preparado)
+                if metricas:
+                    st.success(f"✅ Modelo entrenado - R²: {metricas.get('R2', 0):.3f}")
                 predictor.guardar_modelo('modelo_compras/')
 
             progress_bar.progress(90)
-            status_text.text("📊 Generando recomendaciones de compra...")
+            status_text.text("📊 Generando predicciones...")
             
-            # ✅ AQUÍ ESTÁN LAS 3 PREDICCIONES:
+            # Generar predicciones
+            resultados_prediccion = predictor.predecir_consumo(df_preparado)
             
-            # 1. Predicción mensual (la que ya tienes)
-            resultados_mensuales = predictor.calcular_cantidad_comprar(df_preparado)
-            st.session_state.resultados = resultados_mensuales
+            # Obtener el último registro de cada producto del dataset mensual
+            df_ultimos = df_mensual.sort_values(['producto_estado', 'mes']).groupby('producto_estado').last().reset_index()
             
-            # 2. Predicción trimestral (NUEVA - 3 meses)
-            resultados_trimestrales = predictor.predecir_trimestral(df_preparado)
-            st.session_state.resultados_trimestrales = resultados_trimestrales
+            # Seleccionar columnas que necesitamos
+            columnas_necesarias = ['producto_estado', 'descripcion', 'inventario_actual', 'precio_unitario', 'estado']
+            columnas_existentes = [col for col in columnas_necesarias if col in df_ultimos.columns]
             
-            # 3. Predicción anual (NUEVA - 12 meses)  
-            resultados_anuales = predictor.predecir_anual(df_preparado)
-            st.session_state.resultados_anuales = resultados_anuales
+            # Unir las predicciones con los datos del dataset mensual
+            df_final = pd.merge(
+                resultados_prediccion[['producto_estado', 'consumo_predicho']],
+                df_ultimos[columnas_existentes],
+                on='producto_estado',
+                how='inner'
+            )
             
-            # Guardar también df_preparado y predictor para usar después
-            st.session_state.df_preparado = df_preparado
-            st.session_state.predictor = predictor  # 🆕 GUARDAR PREDICTOR
+            st.session_state.resultados = df_final
+            st.success(f"✅ Predicciones generadas: {len(df_final)} productos")
 
             progress_bar.progress(100)
-            status_text.text("✅ ¡Listo!")
-            mostrar_modal("success", "Predicciones generadas exitosamente ✅")
+            mostrar_modal("success", "✅ ¡Predicciones generadas!")
 
         except Exception as e:
-            mostrar_modal("error", f"Error en la predicción: {str(e)}")
-
+            mostrar_modal("error", f"Error: {str(e)}")
+            st.error(f"Error detallado: {e}")
 
 def mostrar_resultados_detallados():
     """Muestra los resultados de las predicciones"""
     
-    datos_originales = st.session_state.datos_cargados
     resultados_prediccion = st.session_state.resultados
-    
-    if datos_originales is None or resultados_prediccion is None:
+
+    if resultados_prediccion is None:
         st.error("No hay datos disponibles")
         return
-        
-
-
-    # Métricas principales
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total SKUs", f"{resultados_prediccion['id_insumo'].nunique():,}")
-    with col2:
-        st.metric("SKUs a Comprar", f"{(resultados_prediccion['cantidad_comprar'] > 0).sum():,}")
-    with col3:
-        st.metric("Unidades a Comprar", f"18,236")
-    with col4:
-        if 'prioridad' in resultados_prediccion.columns:
-            st.metric("Prioridad ALTA", f"{(resultados_prediccion['prioridad'] == 'ALTA').sum():,}")
-
-    # 🆕 MÉTRICAS FINANCIERAS
-    metricas_financieras = calcular_metricas_financieras(datos_originales, resultados_prediccion)
-    mostrar_metricas_financieras(metricas_financieras)
-
-    # =====================================================
-    # 🆕 NUEVO: PROCESAR PRECIOS Y MONTOS
-    # =====================================================
     
-    # Usar los resultados con precio ya calculados
-    resultados_formateados = metricas_financieras['resultados_con_precio'].copy()
+    # ==============================================
+    # 🎯 SELECTOR DE TIPO DE PREDICCIÓN
+    # ==============================================
+    st.subheader("🎯 Selecciona el tipo de predicción")
     
-    # Renombrar columnas para mejor visualización
-    resultados_formateados.rename(columns={
-        'precio_promedio': 'precio_unitario',
-        'costo_comprar': 'monto_total'
-    }, inplace=True)
-
-    # Formatear columna 'mes' para que sea más legible
-    if 'mes' in resultados_formateados.columns:
-        try:
-            # Convertir a formato de fecha si es numérico (ej: 210405 → 2021-04-05)
-            resultados_formateados['mes_formateado'] = pd.to_datetime(
-                resultados_formateados['mes'].astype(str), format='%y%m%d', errors='coerce'
-            )
-            
-            # Si falla el formato anterior, intentar otros formatos
-            if resultados_formateados['mes_formateado'].isna().any():
-                resultados_formateados['mes_formateado'] = pd.to_datetime(
-                    resultados_formateados['mes'].astype(str), errors='coerce'
-                )
-            
-            # Crear columna con nombre del mes en español
-            meses_espanol = {
-                1: 'Enero', 2: 'Febrero', 3: 'Marzo', 4: 'Abril',
-                5: 'Mayo', 6: 'Junio', 7: 'Julio', 8: 'Agosto',
-                9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre'
-            }
-            
-            resultados_formateados['mes_nombre'] = resultados_formateados['mes_formateado'].dt.month.map(meses_espanol)
-            resultados_formateados['año'] = resultados_formateados['mes_formateado'].dt.year
-            resultados_formateados['mes_completo'] = resultados_formateados['mes_nombre'] + ' ' + resultados_formateados['año'].astype(str)
-            
-        except Exception as e:
-            st.warning(f"No se pudieron formatear las fechas: {e}")
-            resultados_formateados['mes_completo'] = resultados_formateados['mes'].astype(str)
-
-    # =====================================================
-    # 🆕 NUEVO: FILTRO POR MES - CORREGIDO
-    # =====================================================
-    resultados_filtrados = resultados_formateados
-    # =====================================================
-    # 🆕 NUEVO: MOSTRAR TABLA MEJORADA
-    # =====================================================
-    
-    # Tabs para diferentes vistas
-    tab1, tab2 = st.tabs(["💰 Predicciones de Compra", "📁 Datos Originales"])
-    
-    with tab1:
-        st.subheader("📋 Recomendaciones de Compra")
-        
-        # Columnas a mostrar (QUITAMOS consumo, saldo final, consumo_predicho)
-        columnas_mostrar = ['id_insumo']
-            
-        # 🆕 AGREGAMOS precio y monto total
-        columnas_mostrar.extend([
-            'cantidad_comprar', 
-            'precio_unitario', 
-            'monto_total'
-        ])
-        
-        if 'recomendacion' in resultados_filtrados.columns:
-            columnas_mostrar.append('recomendacion')
-        if 'prioridad' in resultados_filtrados.columns:
-            columnas_mostrar.append('prioridad')
-        
-        # Mostrar tabla MEJORADA
-        st.dataframe(
-            resultados_filtrados[columnas_mostrar].head(100), 
-            use_container_width=True, 
-            height=500
-        )
-        
-        # 🆕 MOSTRAR TOTALES FINANCIEROS
-        st.info(f"""
-        **📊 Resumen del filtro actual:**
-        - **SKUs a comprar:** {(resultados_filtrados['cantidad_comprar'] > 0).sum():,}
-        - **Total unidades:** {resultados_filtrados['cantidad_comprar'].sum():,.0f}
-        - **Inversión total:** ${resultados_filtrados['monto_total'].sum():,.2f}
-        """)
-    
-    with tab2:
-        st.subheader("📁 Datos Originales del Kardex")
-        columnas_originales = ['id_insumo', 'fecha', 'canti salida', 'saldo final', 'cantidad_fin', 'promedio_fin']
-        if 'descripcion' in datos_originales.columns:
-            columnas_originales.append('descripcion')
-            
-        columnas_originales = [c for c in columnas_originales if c in datos_originales.columns]
-        
-        st.dataframe(
-            datos_originales[columnas_originales].head(100), 
-            use_container_width=True, 
-            height=500
-        )
-
-    # =====================================================
-    # 🆕 NUEVO: DESCARGAS MEJORADAS
-    # =====================================================
-    
-    st.subheader("📥 Exportar Datos")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        csv_original = datos_originales.to_csv(index=False)
-        st.download_button(
-            label="📁 Datos Originales",
-            data=csv_original,
-            file_name="kardex_original.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with col2:
-        # 🆕 DESCARGAR PREDICCIONES CON PRECIOS
-        csv_predicciones = resultados_formateados.to_csv(index=False)
-        st.download_button(
-            label="💰 Predicciones con Precios",
-            data=csv_predicciones,
-            file_name="predicciones_compras_con_precios.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-
-def mostrar_predicciones_avanzadas():
-    """Mostrar opciones para predicciones trimestrales y anuales"""
-    
-    st.subheader("🔮 Predicciones Avanzadas")
-    
-    # Verificar que las predicciones existen
-    if (st.session_state.get('resultados_trimestrales') is None or 
-        st.session_state.get('resultados_anuales') is None):
-        st.warning("Primero genera las predicciones en el Dashboard principal")
-        return
-    
-    # Selector de tipo de predicción
-    opcion = st.radio(
-        "Selecciona el tipo de predicción avanzada:",
+    opcion_prediccion = st.radio(
+        "**Selecciona el tipo de predicción a visualizar:**",
         ["📅 Predicción Mensual", "📊 Predicción Trimestral", "🎯 Predicción Anual"],
-        horizontal=True
+        horizontal=True,
+        key="selector_prediccion"
     )
     
-    if opcion == "📅 Predicción Mensual":
-        mostrar_resultados_detallados()
+    # Crear copia de los resultados para no modificar los originales
+    df_resultados = resultados_prediccion.copy()
     
-    elif opcion == "📊 Predicción Trimestral":
-        mostrar_predicciones_trimestrales()
+    # Aplicar multiplicador según el tipo de predicción
+    if opcion_prediccion == "📅 Predicción Mensual":
+        titulo = "📊 Predicción Mensual"
+        multiplicador = 1
+    elif opcion_prediccion == "📊 Predicción Trimestral":
+        titulo = "📊 Predicción Trimestral (3 meses)"
+        multiplicador = 3
+    elif opcion_prediccion == "🎯 Predicción Anual":
+        titulo = "🎯 Predicción Anual (12 meses)"
+        multiplicador = 12
     
-    elif opcion == "🎯 Predicción Anual":
-        mostrar_predicciones_anuales()
-
-def mostrar_predicciones_trimestrales():
-    """Mostrar resultados de predicción trimestral"""
-    resultados = st.session_state.resultados_trimestrales
-
-    # Métricas trimestrales
+    # Multiplicar el consumo predicho si existe
+    if 'consumo_predicho' in df_resultados.columns:
+        df_resultados['consumo_predicho'] = df_resultados['consumo_predicho'] * multiplicador
+    
+    # ==============================================
+    # 📊 MÉTRICAS PRINCIPALES
+    # ==============================================
+    st.subheader(f"{titulo}")
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("SKUs con Predicción", f"{len(resultados):,}")
+        if 'inventario_actual' in df_resultados.columns and 'precio_unitario' in df_resultados.columns:
+            # Calcular valor total del inventario actual
+            valor_inventario = (df_resultados['inventario_actual'] * df_resultados['precio_unitario']).sum()
+            st.metric("Valor Inventario Actual", f"S/{valor_inventario:,.2f}")
+        elif 'precio_unitario' in df_resultados.columns:
+            # Solo precio promedio si no hay inventario
+            precio_promedio = df_resultados['precio_unitario'].mean()
+            st.metric("Precio Promedio", f"S/{precio_promedio:,.2f}")
     
     with col2:
-        total_comprar = resultados['cantidad_comprar_trimestral'].sum()
-        st.metric("Total a Comprar (Trim)", f"{total_comprar:,.0f}")
+        if 'consumo_predicho' in df_resultados.columns:
+            consumo_total = df_resultados['consumo_predicho'].sum()
+            st.metric("Consumo Predicho Total", f"S/{consumo_total:,.0f}")
     
     with col3:
-        consumo_predicho = resultados['consumo_trimestral_predicho'].sum()
-        st.metric("Consumo Predicho (Trim)", f"{consumo_predicho:,.0f}")
-    
-    # Tabla de resultados
-    st.subheader("📋 Recomendaciones de Compra Trimestrales")
-    
-    columnas_mostrar = [
-        'id_insumo', 'consumo_trimestral_predicho', 'saldo final',
-        'cantidad_comprar_trimestral', 'prioridad'
-    ]
-    
-    st.dataframe(
-        resultados[columnas_mostrar].sort_values('cantidad_comprar_trimestral', ascending=False),
-        use_container_width=True,
-        height=400
-    )
-    
-    # Botón de exportación
-    csv = resultados.to_csv(index=False)
-    st.download_button(
-        label="📥 Descargar Predicciones Trimestrales",
-        data=csv,
-        file_name="predicciones_trimestrales.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
+        total_productos = df_resultados['producto_estado'].nunique()
+        st.metric("Total Productos", f"{total_productos:,}")
 
-def mostrar_predicciones_anuales():
-    """Mostrar resultados de predicción anual"""
-    resultados = st.session_state.resultados_anuales
+    # ==============================================
+    # 📋 TABLA DE PREDICCIONES
+    # ==============================================
+    st.subheader("📋 Tabla de Predicciones")
     
-    # 🆕 MOSTRAR FECHA REAL PARA PREDICCIÓN ANUAL
+    # Crear DataFrame para mostrar
+    df_tabla = df_resultados.copy()
     
-    # Métricas anuales
+    # Agregar número secuencial
+    df_tabla.insert(0, '#', range(1, len(df_tabla) + 1))
+    
+    # Renombrar columnas
+    df_tabla = df_tabla.rename(columns={
+        'producto_estado': 'ID Producto',
+        'descripcion': 'Descripción',
+        'inventario_actual': 'Inventario Actual',
+        'precio_unitario': 'Precio Unitario',
+        'consumo_predicho': 'Consumo Predicho',
+        'estado': 'Estado'
+    })
+    
+    # Definir columnas en el orden deseado
+    columnas_mostrar = ['#', 'ID Producto', 'Descripción', 'Inventario Actual', 
+                       'Precio Unitario', 'Consumo Predicho', 'Estado']
+    
+    # Filtrar solo las columnas que existen
+    columnas_mostrar = [col for col in columnas_mostrar if col in df_tabla.columns]
+    
+    # Formatear valores
+    if 'Precio Unitario' in df_tabla.columns:
+        df_tabla['Precio Unitario'] = df_tabla['Precio Unitario'].apply(
+            lambda x: f"S/{float(x):,.2f}" if pd.notnull(x) else "S/0.00"
+        )
+    
+    # Formatear valores numéricos como enteros
+    for col in ['Inventario Actual', 'Consumo Predicho']:
+        if col in df_tabla.columns:
+            df_tabla[col] = df_tabla[col].apply(
+                lambda x: f"{int(float(x)):,}" if pd.notnull(x) else "0"
+            )
+    
+    # Ordenar por Consumo Predicho descendente
+    if 'Consumo Predicho' in df_tabla.columns:
+        df_tabla['_orden'] = df_tabla['Consumo Predicho'].str.replace(',', '').astype(float)
+        df_tabla = df_tabla.sort_values('_orden', ascending=False)
+        df_tabla = df_tabla.drop('_orden', axis=1)
+    
+    # Mostrar tabla
+    st.dataframe(
+        df_tabla[columnas_mostrar],
+        use_container_width=True,
+        height=500,
+        hide_index=True
+    )
+    
+    st.caption(f"Mostrando {len(df_tabla):,} productos - {opcion_prediccion}")
+
+    # ==============================================
+    # 📥 EXPORTAR DATOS
+    # ==============================================
+    st.subheader("📥 Exportar Resultados")
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("SKUs con Predicción", f"{len(resultados):,}")
+        csv_tabla = df_tabla[columnas_mostrar].to_csv(index=False)
+        nombre_archivo = "predicciones_mensuales.csv"
+        if opcion_prediccion == "📊 Predicción Trimestral":
+            nombre_archivo = "predicciones_trimestrales.csv"
+        elif opcion_prediccion == "🎯 Predicción Anual":
+            nombre_archivo = "predicciones_anuales.csv"
+            
+        st.download_button(
+            label=f"📋 Descargar {opcion_prediccion.split(' ')[1]}",
+            data=csv_tabla,
+            file_name=nombre_archivo,
+            mime="text/csv",
+            use_container_width=True
+        )
     
     with col2:
-        total_comprar = resultados['cantidad_comprar_anual'].sum()
-        st.metric("Total a Comprar (Anual)", f"{total_comprar:,.0f}")
+        csv_original = df_resultados.to_csv(index=False)
+        st.download_button(
+            label="📊 Datos Completos",
+            data=csv_original,
+            file_name="predicciones_detalladas.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
     
     with col3:
-        consumo_predicho = resultados['consumo_anual_predicho'].sum()
-        st.metric("Consumo Predicho (Anual)", f"{consumo_predicho:,.0f}")
-    
-    # Tabla de resultados
-    st.subheader("📋 Recomendaciones de Compra Anuales")
-    
-    columnas_mostrar = [
-        'id_insumo', 'consumo_anual_predicho', 'saldo final',
-        'cantidad_comprar_anual', 'prioridad'
-    ]
-    
-    st.dataframe(
-        resultados[columnas_mostrar].sort_values('cantidad_comprar_anual', ascending=False),
-        use_container_width=True,
-        height=400
-    )
-    
-    # Botón de exportación
-    csv = resultados.to_csv(index=False)
-    st.download_button(
-        label="📥 Descargar Predicciones Anuales",
-        data=csv,
-        file_name="predicciones_anuales.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
+        # Exportar solo productos críticos
+        if 'estado' in df_resultados.columns:
+            df_criticos = df_resultados[df_resultados['estado'].isin(['QUIEBRE', 'ALTA'])]
+            if len(df_criticos) > 0:
+                csv_criticos = df_criticos.to_csv(index=False)
+                st.download_button(
+                    label="🚨 Productos Críticos",
+                    data=csv_criticos,
+                    file_name="productos_criticos.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
 # =====================================================
 # 📊 DASHBOARD PRINCIPAL
 # =====================================================
 def mostrar_dashboard():
-    st.markdown("<h2 style='text-align: center;'>📊 Dashboard de Inventarios</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>📊 Dashboard de Predicción de Consumo</h2>", unsafe_allow_html=True)
 
-    if st.session_state.get('datos_cargados') is None:
-        mostrar_modal("error", "No se pudieron cargar los datos automáticamente")
-        st.info("""
-        **Solución:**
-        1. Asegúrate de que existe la carpeta 'dataset'
-        2. Coloca tu archivo Excel o CSV en la carpeta 'dataset'
-        3. Reinicia la aplicación
-        """)
-        return
-
-    datos = st.session_state.datos_cargados
-    mostrar_modal("success", f"📁 Datos listos: {len(datos):,} registros, {datos['id_insumo'].nunique():,} SKUs")
-
-    # Botón principal
-    if st.button("🚀 Generar Predicciones Automáticamente", type="primary", use_container_width=True):
+    # Botones principales
+    if st.button("🚀 Generar Predicciones de Consumo", type="primary", use_container_width=True):
         generar_predicciones()
+        st.rerun()
+    
+    # Verificar si tenemos el dataset mensual
+    ruta_dataset = "dataset/dataset_mensual_generado.xlsx"
+    
+    if not os.path.exists(ruta_dataset):
+        st.error(f"❌ No se encontró el archivo: {ruta_dataset}")
+        st.warning("Por favor, asegúrate de que el archivo 'dataset_mensual_generado.xlsx' esté en la carpeta 'dataset/'")
+        return
+    
+    # Si tenemos el dataset, mostrar información
+    try:
+        df_mensual = pd.read_excel(ruta_dataset)        
+    except Exception as e:
+        st.error(f"❌ Error al cargar el dataset: {e}")
+        return
 
     # Mostrar resultados si existen
     if st.session_state.get('resultados') is not None:
-        mostrar_modal("info", "✅ Predicciones listas. Mostrando resultados...")
-        
-        # Selector de tipo de predicción
-        st.markdown("---")
-        opcion_prediccion = st.radio(
-            "**Selecciona el tipo de predicción a visualizar:**",
-            ["📅 Predicción Mensual", "📊 Predicción Trimestral", "🎯 Predicción Anual"],
-            horizontal=True,
-            key="selector_prediccion"
-        )
-        
-        # 🆕 OBTENER FECHAS REALES PARA EL TÍTULO
-        if st.session_state.get('predictor'):
-            predictor = st.session_state.predictor
-            
-            if opcion_prediccion == "📅 Predicción Mensual":
-                periodo = "mensual"
-                fechas_prediccion = predictor.obtener_fechas_prediccion_futura(periodo)
-                st.header(f"📊 Predicción de {fechas_prediccion[0]}")
-                
-            elif opcion_prediccion == "📊 Predicción Trimestral":
-                periodo = "trimestral"
-                fechas_prediccion = predictor.obtener_fechas_prediccion_futura(periodo)
-                st.header(f"📊 Predicción Trimestral: {fechas_prediccion[0]} a {fechas_prediccion[-1]}")
-                
-            elif opcion_prediccion == "🎯 Predicción Anual":
-                periodo = "anual"
-                fechas_prediccion = predictor.obtener_fechas_prediccion_futura(periodo)
-                st.header(f"📊 Predicción Anual: {fechas_prediccion[0]} a {fechas_prediccion[-1]}")
-        
-        if opcion_prediccion == "📅 Predicción Mensual":
-            mostrar_resultados_detallados()
-        elif opcion_prediccion == "📊 Predicción Trimestral":
-            mostrar_predicciones_trimestrales()
-        elif opcion_prediccion == "🎯 Predicción Anual":
-            mostrar_predicciones_anuales()
-            
+        mostrar_resultados_detallados()
     else:
-        st.info("💡 Haz clic en 'Generar Predicciones' para ver los resultados")
+        st.info("💡 Haz clic en 'Generar Predicciones de Consumo' para ver los resultados")
+
+# Función para inicializar el dashboard
+def inicializar_dashboard():
+    """Inicializar el dashboard"""
+    inicializar_sistema()
+    mostrar_dashboard()

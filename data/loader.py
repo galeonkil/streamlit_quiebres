@@ -4,9 +4,25 @@ import os
 
 @st.cache_data
 def cargar_datos_automaticamente():
-    """Cargar datos automáticamente desde la carpeta dataset"""
+    """Cargar datos automáticamente - PRIMERO busca procesados"""
     try:
+        # ============================================
+        # 1. PRIMERO: Buscar datos YA procesados
+        # ============================================
+        if os.path.exists("dataset_mensual_generado.xlsx"):
+            df = pd.read_excel("dataset_mensual_generado.xlsx")
+            st.success("✅ Datos cargados desde archivo procesado")
+            return df
+        
+        # ============================================
+        # 2. SEGUNDO: Si no existen procesados, buscar en carpeta dataset
+        # ============================================
         dataset_path = "dataset"
+        
+        if not os.path.exists(dataset_path):
+            st.error("❌ No se encontró la carpeta 'dataset'")
+            return None
+        
         archivos = os.listdir(dataset_path)
         
         archivos_excel = [f for f in archivos if f.endswith(('.xlsx', '.xls'))]
@@ -33,13 +49,15 @@ def cargar_datos_automaticamente():
 def inicializar_sistema():
     """Inicializar el sistema con datos y modelo"""
     
+    # Cargar datos (automáticamente busca procesados primero)
     if 'datos_cargados' not in st.session_state:
-        with st.spinner("🔄 Cargando datos automáticamente..."):
+        with st.spinner("🔄 Cargando datos..."):
             datos = cargar_datos_automaticamente()
             if datos is not None:
                 st.session_state.datos_cargados = datos
                 st.session_state.datos_automaticos = True
     
+    # Inicializar predictor
     if 'predictor' not in st.session_state:
         from utils.predictor import PredictorComprasMejorado
         st.session_state.predictor = PredictorComprasMejorado(use_log_transform=True)

@@ -1,4 +1,5 @@
 import streamlit as st
+import os 
 
 # Configuración de la página
 st.set_page_config(
@@ -18,6 +19,7 @@ from components.dashboard import mostrar_dashboard, inicializar_sistema
 from components.reports import mostrar_reportes_graficos
 from components.records import mostrar_registros
 from components.config import mostrar_configuracion
+from components.planificacion import mostrar_planificacion 
 
 def main():
     # Aplicar estilos globales
@@ -44,6 +46,8 @@ def main():
         mostrar_reportes_graficos()
     elif opcion_seleccionada == "registros":
         mostrar_registros()
+    elif opcion_seleccionada == "planificacion":  # NUEVA OPCIÓN
+        mostrar_planificacion()
     elif opcion_seleccionada == "configuracion":
         mostrar_configuracion()
 

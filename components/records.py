@@ -1,206 +1,322 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import plotly.express as px
 
 def mostrar_registros():
-    st.header("🔍 Buscar Registros")
+    st.header("🔍 Buscar Productos en Predicciones")
     
-    if st.session_state.get('datos_cargados') is None:
-        st.error("No hay datos cargados en el sistema")
+    # ================== VERIFICAR DATOS ==================
+    if st.session_state.get('resultados') is None:
+        st.error("❌ No hay predicciones generadas")
+        st.info("Primero genera predicciones en el Dashboard")
         return
     
-    datos = st.session_state.datos_cargados.copy()
+    resultados = st.session_state.resultados
     
-    # ================== CONVERTIR DATOS NUMÉRICOS ==================
-    if 'canti salida' in datos.columns:
-        datos['canti salida'] = pd.to_numeric(datos['canti salida'], errors='coerce').fillna(0)
+    # ================== MOSTRAR INFO DEL DATASET ==================
+    st.info(f"📊 Dataset de Predicciones: {len(resultados):,} productos-mes analizados")
     
-    if 'saldo final' in datos.columns:
-        datos['saldo final'] = pd.to_numeric(datos['saldo final'], errors='coerce').fillna(0)
+    # ================== BÚSQUEDA ESPECÍFICA ==================
+    st.subheader("🔎 Buscar Producto Específico")
     
-    if 'canti entrada' in datos.columns:
-        datos['canti entrada'] = pd.to_numeric(datos['canti entrada'], errors='coerce').fillna(0)
-    
-    # ================== BÚSQUEDA SIMPLE ==================
-    st.subheader("Filtrar Registros")
-    
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        buscar_texto = st.text_input(
-            "Buscar por ID o Descripción:", 
-            placeholder="Ej: 501001001 o Llanta",
-            key="buscar_texto"
+        codigo_buscar = st.text_input(
+            "Ingresa el código del producto:", 
+            placeholder="Ej: 0617001023-N",
+            key="buscar_codigo"
         )
     
     with col2:
-        limite_registros = st.slider("Registros a mostrar", 10, 100, 50)
+        st.metric("Total productos", f"{len(resultados):,}")
     
-    # Aplicar filtro de búsqueda
-    if buscar_texto:
-        mask_sku = datos['id_insumo'].astype(str).str.contains(buscar_texto, na=False, case=False)
-        mask_desc = pd.Series(False, index=datos.index)
-        if 'descripcion' in datos.columns:
-            mask_desc = datos['descripcion'].astype(str).str.contains(buscar_texto, na=False, case=False)
-        mask_total = mask_sku | mask_desc
-        datos_filtrados = datos[mask_total]
-    else:
-        datos_filtrados = datos
+    with col3:
+        if 'estado' in resultados.columns:
+            quiebres = resultados[resultados['estado'] == 'QUIEBRE'].shape[0]
+            st.metric("🚨 En quiebre", quiebres)
     
-    # ================== ALERTAS DE PREDICCIÓN ==================
-    if st.session_state.get('resultados') is not None and len(datos_filtrados) > 0:
-        st.subheader("🚨 Alertas de Predicción")
+    # ================== BUSCAR Y MOSTRAR RESULTADO ==================
+    if codigo_buscar:
+        # Buscar en la columna producto_estado
+        resultados_filtrados = resultados[resultados['producto_estado'].astype(str).str.contains(codigo_buscar, na=False, case=False)]
         
-        resultados = st.session_state.resultados
-        skus_unicos = datos_filtrados['id_insumo'].unique()
+        if len(resultados_filtrados) == 0:
+            # Intentar buscar en otras columnas
+            for col in ['descripcion', 'producto', 'codigo', 'id_producto']:
+                if col in resultados.columns:
+                    resultados_filtrados = resultados[resultados[col].astype(str).str.contains(codigo_buscar, na=False, case=False)]
+                    if len(resultados_filtrados) > 0:
+                        break
         
-        alertas_encontradas = 0
-        
-        for sku in skus_unicos[:10]:  # Mostrar máximo 10 SKUs
-            info_sku = resultados[resultados['id_insumo'] == sku]
+        if len(resultados_filtrados) > 0:
+            st.success(f"✅ Encontrado: {len(resultados_filtrados)} registro(s)")
             
-            if not info_sku.empty:
-                info = info_sku.iloc[0]
-                alertas_encontradas += 1
+            # ================== MOSTRAR TABLA DETALLADA ==================
+            st.subheader("📋 Información del Producto")
+            
+            # Seleccionar columnas para mostrar (priorizando las importantes)
+            columnas_mostrar = []
+            
+            # Columnas principales (en el orden que muestras)
+            columnas_prioridad = [
+                'producto_estado',
+                'descripcion', 
+                'inventario_actual',
+                'consumo_predicho',
+                'precio_unitario',
+                'valor_inventario',
+                'estado',
+                'prioridad',
+                'cantidad_comprar'
+            ]
+            
+            for col in columnas_prioridad:
+                if col in resultados_filtrados.columns:
+                    columnas_mostrar.append(col)
+            
+            # Formatear la tabla para mejor visualización
+            resultados_mostrar = resultados_filtrados[columnas_mostrar].copy()
+            
+            # Formatear columnas numéricas
+            if 'precio_unitario' in resultados_mostrar.columns:
+                resultados_mostrar['precio_unitario'] = resultados_mostrar['precio_unitario'].apply(
+                    lambda x: f"S/{x:,.2f}" if pd.notnull(x) else "S/0.00"
+                )
+            
+            if 'valor_inventario' in resultados_mostrar.columns:
+                resultados_mostrar['valor_inventario'] = resultados_mostrar['valor_inventario'].apply(
+                    lambda x: f"S/{x:,.2f}" if pd.notnull(x) else "S/0.00"
+                )
+            
+            # Mostrar tabla formateada
+            st.dataframe(
+                resultados_mostrar,
+                use_container_width=True,
+                height=min(400, len(resultados_filtrados) * 35 + 100)
+            )
+            
+            # ================== MOSTRAR ESTADÍSTICAS DEL PRODUCTO ==================
+            st.subheader("📊 Análisis del Producto")
+            
+            for _, fila in resultados_filtrados.iterrows():
+                producto = fila.get('producto_estado', 'Producto')
+                descripcion = fila.get('descripcion', 'Sin descripción')
+                estado = fila.get('estado', 'DESCONOCIDO')
+                inventario = fila.get('inventario_actual', 0)
+                consumo_pred = fila.get('consumo_predicho', 0)
+                precio = fila.get('precio_unitario', 0)
+                valor_inv = fila.get('valor_inventario', 0)
+                comprar = fila.get('cantidad_comprar', 0)
+                prioridad = fila.get('prioridad', 'MEDIA')
                 
-                # Determinar tipo de alerta
-                if info['prioridad'] == 'ALTA':
-                    with st.container():
-                        st.error(f"**🚨 ALERTA CRÍTICA - SKU {sku}**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Stock Actual", f"{info['saldo final']:.0f}")
-                        with col2:
-                            st.metric("Consumo Predicho", f"{info['consumo_predicho']:.0f}")
-                        with col3:
-                            st.metric("Comprar Urgente", f"{info['cantidad_comprar']:.0f}")
-                        st.progress(0.2, text="🔄 Riesgo de quiebre inminente")
-                        st.markdown("---")
+                # Tarjeta de información
+                if estado == 'QUIEBRE':
+                    color_borde = "#FF6B6B"
+                    icono = "🚨"
+                    mensaje = "URGENTE - Necesita reposición inmediata"
+                elif estado == 'SOBRE STOCK':
+                    color_borde = "#FFA500"
+                    icono = "📦"
+                    mensaje = "Exceso de inventario - No comprar"
+                else:
+                    color_borde = "#00D4AA"
+                    icono = "✅"
+                    mensaje = "Nivel óptimo de inventario"
                 
-                elif info['prioridad'] == 'BAJA':
-                    with st.container():
-                        st.warning(f"**📦 SOBRE STOCK - SKU {sku}**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Stock Actual", f"{info['saldo final']:.0f}")
-                        with col2:
-                            st.metric("Consumo Predicho", f"{info['consumo_predicho']:.0f}")
-                        with col3:
-                            st.metric("Recomendación", "NO COMPRAR")
-                        # Calcular días de inventario excedente
-                        dias_inventario = (info['saldo final'] / info['consumo_predicho']) * 30 if info['consumo_predicho'] > 0 else 0
-                        st.progress(0.8, text=f"📊 {dias_inventario:.0f} días de inventario")
-                        st.markdown("---")
+                st.markdown(f"""
+                <div style='border: 2px solid {color_borde}; border-radius: 10px; padding: 15px; margin: 10px 0; background-color: #f8f9fa;'>
+                    <h3 style='color: {color_borde}; margin-top: 0;'>{icono} {producto} - {estado}</h3>
+                    <p><strong>Descripción:</strong> {descripcion}</p>
+                    <div style='display: flex; justify-content: space-between;'>
+                        <div>
+                            <p><strong>📦 Inventario actual:</strong> {inventario:,}</p>
+                            <p><strong>📈 Consumo predicho/mes:</strong> {consumo_pred:,.0f}</p>
+                        </div>
+                        <div>
+                            <p><strong>💰 Precio unitario:</strong> S/{precio:,.2f}</p>
+                            <p><strong>💵 Valor inventario:</strong> S/{valor_inv:,.2f}</p>
+                        </div>
+                        <div>
+                            <p><strong>🛒 Cantidad a comprar:</strong> {comprar:,}</p>
+                            <p><strong>⚡ Prioridad:</strong> {prioridad}</p>
+                        </div>
+                    </div>
+                    <p style='font-style: italic; margin-top: 10px;'>{mensaje}</p>
+                </div>
+                """, unsafe_allow_html=True)
                 
-                else:  # PRIORIDAD MEDIA
-                    with st.container():
-                        st.info(f"**✅ SITUACIÓN NORMAL - SKU {sku}**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Stock Actual", f"{info['saldo final']:.0f}")
-                        with col2:
-                            st.metric("Consumo Predicho", f"{info['consumo_predicho']:.0f}")
-                        with col3:
-                            st.metric("Comprar", f"{info['cantidad_comprar']:.0f}")
-                        st.progress(0.5, text="📈 Inventario en nivel óptimo")
-                        st.markdown("---")
+                # Gráfico simple del estado
+                fig = go.Figure()
+                
+                # Agregar barra para inventario
+                fig.add_trace(go.Indicator(
+                    mode="gauge+number",
+                    value=inventario,
+                    title={'text': "📦 Inventario Actual"},
+                    domain={'x': [0, 0.3], 'y': [0, 1]},
+                    gauge={
+                        'axis': {'range': [0, max(inventario*2, 100)]},
+                        'bar': {'color': color_borde},
+                        'steps': [
+                            {'range': [0, consumo_pred*0.3], 'color': "#FF6B6B"},
+                            {'range': [consumo_pred*0.3, consumo_pred*2], 'color': "#00D4AA"},
+                            {'range': [consumo_pred*2, max(inventario*2, 100)], 'color': "#FFA500"}
+                        ]
+                    }
+                ))
+                
+                # Agregar barra para consumo predicho
+                fig.add_trace(go.Indicator(
+                    mode="number",
+                    value=consumo_pred,
+                    title={'text': "📈 Consumo Predicho"},
+                    domain={'x': [0.35, 0.65], 'y': [0, 1]},
+                    number={'suffix': "/mes"}
+                ))
+                
+                # Agregar indicador de acción
+                if estado == 'QUIEBRE':
+                    accion_text = "COMPRAR URGENTE"
+                    accion_valor = 100
+                elif estado == 'SOBRE STOCK':
+                    accion_text = "NO COMPRAR"
+                    accion_valor = 10
+                else:
+                    accion_text = "COMPRAR NORMAL"
+                    accion_valor = 50
+                
+                fig.add_trace(go.Indicator(
+                    mode="gauge+number",
+                    value=accion_valor,
+                    title={'text': "🛒 Recomendación"},
+                    domain={'x': [0.7, 1], 'y': [0, 1]},
+                    gauge={
+                        'axis': {'range': [0, 100]},
+                        'bar': {'color': color_borde},
+                        'steps': [
+                            {'range': [0, 33], 'color': "#FF6B6B"},
+                            {'range': [33, 66], 'color': "#FFA500"},
+                            {'range': [66, 100], 'color': "#00D4AA"}
+                        ]
+                    },
+                    number={'suffix': '%', 'font': {'size': 24}}
+                ))
+                
+                fig.update_layout(
+                    height=300,
+                    margin=dict(l=20, r=20, t=50, b=20),
+                    showlegend=False
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # ================== MOSTRAR HISTORIAL SI HAY DATOS ORIGINALES ==================
+            if st.session_state.get('datos_cargados') is not None and len(resultados_filtrados) > 0:
+                
+                datos_originales = st.session_state.datos_cargados.copy()
+                producto_codigo = resultados_filtrados.iloc[0]['producto_estado']
+                
+                # Buscar en datos originales
+                if 'producto_estado' in datos_originales.columns:
+                    historial = datos_originales[datos_originales['producto_estado'] == producto_codigo]
+                    
+                    if len(historial) > 0:
+                        # Mostrar últimas 20 transacciones
+                        columnas_historial = []
+                        for col in ['fecha', 'canti salida', 'canti entrada', 'mes', 'anio']:
+                            if col in historial.columns:
+                                columnas_historial.append(col)
+                        
+                        st.write(f"📊 **{len(historial)} transacciones históricas encontradas**")
+                        st.dataframe(
+                            historial[columnas_historial].sort_values('fecha', ascending=False).head(20),
+                            use_container_width=True,
+                            height=300
+                        )
+                        
+                        # Gráfico de serie de tiempo si hay fechas
+                        if 'fecha' in historial.columns and 'canti salida' in historial.columns:
+                            try:
+                                historial['fecha'] = pd.to_datetime(historial['fecha'], errors='coerce')
+                                historial = historial.dropna(subset=['fecha'])
+                                
+                                fig_hist = px.line(
+                                    historial.sort_values('fecha'),
+                                    x='fecha',
+                                    y='canti salida',
+                                    title=f"📈 Evolución de consumo - {producto_codigo}",
+                                    markers=True
+                                )
+                                fig_hist.update_layout(height=400)
+                                st.plotly_chart(fig_hist, use_container_width=True)
+                            except:
+                                pass
+                    else:
+                        st.info("No se encontró historial de transacciones para este producto")
+        else:
+            st.error(f"❌ No se encontró el producto: {codigo_buscar}")
+            
+            # Sugerir códigos similares
+            if 'producto_estado' in resultados.columns:
+                codigos_similares = resultados['producto_estado'].astype(str).unique()
+                sugerencias = [c for c in codigos_similares if codigo_buscar in str(c)]
+                
+                if sugerencias:
+                    st.info("¿Quizás quisiste decir?")
+                    for sugerencia in sugerencias[:5]:  # Mostrar máximo 5 sugerencias
+                        st.write(f"- {sugerencia}")
+    else:
+        # ================== VISTA GENERAL CUANDO NO HAY BÚSQUEDA ==================
+        st.subheader("📋 Vista General del Dataset de Predicciones")
         
-        if alertas_encontradas == 0:
-            st.info("ℹ️ No se encontraron predicciones para los SKUs filtrados")
-    
-    elif st.session_state.get('resultados') is None:
-        st.warning("⚠️ **Genera predicciones primero** en el Dashboard para ver alertas de compra")
-        if st.button("📊 Ir al Dashboard para generar predicciones"):
-            st.rerun()
-    
-    # ================== MOSTRAR RESULTADOS ==================
-    st.subheader(f"📊 Resultados ({len(datos_filtrados)} registros)")
-    
-    if len(datos_filtrados) > 0:
-        # Seleccionar columnas a mostrar
-        columnas_mostrar = ['id_insumo', 'fecha', 'canti salida', 'saldo final']
-        if 'descripcion' in datos_filtrados.columns:
-            columnas_mostrar.append('descripcion')
-        if 'canti entrada' in datos_filtrados.columns:
-            columnas_mostrar.append('canti entrada')
+        # Mostrar primeras filas
+        columnas_general = []
+        for col in ['producto_estado', 'descripcion', 'inventario_actual', 'estado']:
+            if col in resultados.columns:
+                columnas_general.append(col)
         
-        # Mostrar dataframe
         st.dataframe(
-            datos_filtrados[columnas_mostrar].head(limite_registros),
+            resultados[columnas_general].head(20),
             use_container_width=True,
             height=400
         )
         
-        # Mostrar estadísticas simples
+        # Estadísticas rápidas
+        st.subheader("📊 Estadísticas Rápidas")
+        
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("SKUs únicos", datos_filtrados['id_insumo'].nunique())
+            if 'estado' in resultados.columns:
+                optimos = resultados[resultados['estado'] == 'OPTIMO'].shape[0]
+                st.metric("✅ Óptimos", optimos)
         
         with col2:
-            try:
-                total_consumo = datos_filtrados['canti salida'].sum()
-                st.metric("Total consumo", f"{total_consumo:,.0f}")
-            except:
-                st.metric("Total consumo", "N/A")
+            if 'estado' in resultados.columns:
+                sobre_stock = resultados[resultados['estado'] == 'SOBRE STOCK'].shape[0]
+                st.metric("📦 Sobre stock", sobre_stock)
         
         with col3:
-            try:
-                stock_promedio = datos_filtrados['saldo final'].mean()
-                st.metric("Stock promedio", f"{stock_promedio:.0f}")
-            except:
-                st.metric("Stock promedio", "N/A")
-            
-    else:
-        if buscar_texto:
-            st.info("No se encontraron registros con ese criterio de búsqueda")
-            
-            if len(datos) > 0:
-                with st.expander("Ver IDs disponibles como referencia"):
-                    skus_sample = datos['id_insumo'].astype(str).unique()[:10]
-                    for sku in skus_sample:
-                        st.write(f"- {sku}")
-        else:
-            st.info("Ingresa un término de búsqueda para filtrar los registros")
-    
-    # ================== INFORMACIÓN GENERAL ==================
-    st.markdown("---")
-    st.subheader("📋 Información del Dataset")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total registros", f"{len(datos):,}")
-    
-    with col2:
-        st.metric("SKUs únicos", f"{datos['id_insumo'].nunique():,}")
+            if 'estado' in resultados.columns:
+                quiebres = resultados[resultados['estado'] == 'QUIEBRE'].shape[0]
+                st.metric("🚨 Quiebres", quiebres)
         
-    with col3:
-        if 'fecha' in datos.columns:
-            try:
-                # Limpiar y convertir a string
-                datos['fecha'] = datos['fecha'].astype(str).str.strip()
-                
-                # Reemplazar el patrón problemático de milisegundos
-                datos['fecha'] = datos['fecha'].str.replace(
-                    r'(\d{2}:\d{2}:\d{2}):(\d{1,3})$', 
-                    r'\1.\2', 
-                    regex=True
-                )
-                
-                # Parsear fechas con formato específico para milisegundos
-                fechas = pd.to_datetime(datos['fecha'], format='%d/%m/%Y %H:%M:%S.%f', errors='coerce')
-                
-                # Filtrar solo fechas reales (a partir de 2024)
-                fechas_reales = fechas[fechas >= pd.Timestamp('2024-01-01')]
-                
-                if len(fechas_reales) > 0:
-                    fecha_min = fechas_reales.min().strftime('%d/%m/%Y')
-                    fecha_max = fechas_reales.max().strftime('%d/%m/%Y')
-                    st.metric("📅 Rango de Fechas", f"{fecha_min} a {fecha_max}")
-                else:
-                    st.metric("📅 Rango de Fechas", "No disponible")
-                    
-            except Exception as e:
-                st.metric("📅 Rango de Fechas", "Error")
-        else:
-            st.metric("📅 Rango de Fechas", "N/A")
+        # Distribución gráfica
+        if 'estado' in resultados.columns:
+            fig_dist = px.pie(
+                values=resultados['estado'].value_counts().values,
+                names=resultados['estado'].value_counts().index,
+                title="Distribución por Estado",
+                color=resultados['estado'].value_counts().index,
+                color_discrete_map={
+                    'QUIEBRE': '#FF6B6B',
+                    'SOBRE STOCK': '#FFA500',
+                    'OPTIMO': '#00D4AA'
+                }
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+# Necesitas importar plotly.graph_objects
+import plotly.graph_objects as go

@@ -13,195 +13,320 @@ def mostrar_reportes_graficos():
     
     resultados = st.session_state.resultados
     
-    # ================== ANÁLISIS DE RIESGOS ==================
-    st.subheader("🚨 Análisis de Riesgos de Inventario")
+    # ================== VERIFICAR QUÉ DATOS TENEMOS ==================
+    st.info(f"📊 Total de productos analizados: {len(resultados):,}")
     
-    # 1. DETECCIÓN DE SOBRE STOCK
-    st.markdown("### 📦 Análisis de Sobre Stock")
+    if 'estado' not in resultados.columns:
+        st.error("❌ No se encontró la columna 'estado' en los resultados")
+        return
     
-    # Calcular días de inventario
-    resultados['dias_inventario'] = np.where(
-        resultados['consumo_predicho'] > 0,
-        (resultados['saldo final'] / resultados['consumo_predicho']) * 30,
-        0
-    )
+    # Contar productos por estado
+    conteo_estados = resultados['estado'].value_counts()
+    total_productos = len(resultados)
     
-    # Identificar sobre stock (más de 90 días de inventario)
-    sobre_stock = resultados[resultados['dias_inventario'] > 90]
+    # ================== MATRIZ DE GRÁFICOS 2x3 ==================
+    st.subheader("📊 Análisis de Inventario")
     
-    col1, col2 = st.columns(2)
+    # PRIMERA FILA: DIAGRAMAS DE PIE
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Gráfico de torta - Distribución de sobre stock
-        if not sobre_stock.empty:
-            fig_sobre_stock = px.pie(
-                values=[len(sobre_stock), len(resultados) - len(sobre_stock)],
-                names=['Con Sobre Stock', 'Sin Sobre Stock'],
-                title="📊 Porcentaje de SKUs con Sobre Stock",
-                color=['Con Sobre Stock', 'Sin Sobre Stock'],
-                color_discrete_map={'Con Sobre Stock': '#FF6B6B', 'Sin Sobre Stock': '#4ECDC4'}
-            )
-            st.plotly_chart(fig_sobre_stock, use_container_width=True)
-        else:
-            st.info("🎉 No se detectaron SKUs con sobre stock")
-    
-    with col2:
-        # Top SKUs con mayor sobre stock
-        if not sobre_stock.empty:
-            top_sobre_stock = sobre_stock.nlargest(10, 'dias_inventario')[['id_insumo', 'dias_inventario', 'saldo final', 'consumo_predicho']]
-            top_sobre_stock['exceso_dias'] = top_sobre_stock['dias_inventario'] - 90
+        # 1. Porcentaje de QUIEBRES
+        if 'QUIEBRE' in conteo_estados:
+            porcentaje_quiebre = (conteo_estados['QUIEBRE'] / total_productos) * 100
             
-            fig_top_sobre = px.bar(
-                top_sobre_stock,
-                x='exceso_dias',
-                y='id_insumo',
-                orientation='h',
-                title="📈 Top 10 SKUs con Mayor Exceso de Inventario",
-                labels={'exceso_dias': 'Días por encima del límite', 'id_insumo': 'SKU'},
-                color='exceso_dias',
-                color_continuous_scale='Reds'
+            fig_quiebre_pie = px.pie(
+                values=[porcentaje_quiebre, 100 - porcentaje_quiebre],
+                names=['En Quiebre', 'No en Quiebre'],
+                title=f"🔄 Quiebres: {porcentaje_quiebre:.1f}%",
+                color=['En Quiebre', 'No en Quiebre'],
+                color_discrete_map={'En Quiebre': '#FF6B6B', 'No en Quiebre': '#4ECDC4'},
+                hole=0.3
             )
-            st.plotly_chart(fig_top_sobre, use_container_width=True)
-    
-    # 2. DETECCIÓN DE QUIEBRES
-    st.markdown("### ⚠️ Análisis de Riesgo de Quiebre")
-    
-    # Calcular riesgo de quiebre (stock < 15 días de consumo)
-    resultados['riesgo_quiebre'] = resultados['dias_inventario'] < 15
-    riesgo_quiebre = resultados[resultados['riesgo_quiebre'] == True]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Gráfico de riesgo de quiebre
-        if not riesgo_quiebre.empty:
-            fig_riesgo_quiebre = px.pie(
-                values=[len(riesgo_quiebre), len(resultados) - len(riesgo_quiebre)],
-                names=['Riesgo Quiebre', 'Sin Riesgo'],
-                title="📊 Porcentaje de SKUs con Riesgo de Quiebre",
-                color=['Riesgo Quiebre', 'Sin Riesgo'],
-                color_discrete_map={'Riesgo Quiebre': '#FFA500', 'Sin Riesgo': '#00D4AA'}
+            fig_quiebre_pie.update_traces(textinfo='percent+label', textposition='inside')
+            fig_quiebre_pie.update_layout(
+                height=400,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
             )
-            st.plotly_chart(fig_riesgo_quiebre, use_container_width=True)
+            st.plotly_chart(fig_quiebre_pie, use_container_width=True)
         else:
-            st.info("✅ No se detectaron SKUs con riesgo de quiebre")
+            st.info("No hay productos en estado QUIEBRE")
     
     with col2:
-        # Top SKUs con mayor riesgo de quiebre
-        if not riesgo_quiebre.empty:
-            top_riesgo = riesgo_quiebre.nsmallest(10, 'dias_inventario')[['id_insumo', 'dias_inventario', 'saldo final', 'consumo_predicho']]
+        # 2. Porcentaje de SOBRE STOCK
+        if 'SOBRE STOCK' in conteo_estados:
+            porcentaje_sobre_stock = (conteo_estados['SOBRE STOCK'] / total_productos) * 100
             
-            fig_top_riesgo = px.bar(
-                top_riesgo,
-                x='dias_inventario',
-                y='id_insumo',
-                orientation='h',
-                title="📉 Top 10 SKUs con Mayor Riesgo de Quiebre",
-                labels={'dias_inventario': 'Días de Inventario Restantes', 'id_insumo': 'SKU'},
-                color='dias_inventario',
-                color_continuous_scale='Oranges'
+            fig_sobre_stock_pie = px.pie(
+                values=[porcentaje_sobre_stock, 100 - porcentaje_sobre_stock],
+                names=['Sobre Stock', 'No Sobre Stock'],
+                title=f"📦 Sobre Stock: {porcentaje_sobre_stock:.1f}%",
+                color=['Sobre Stock', 'No Sobre Stock'],
+                color_discrete_map={'Sobre Stock': '#FFA500', 'No Sobre Stock': '#00D4AA'},
+                hole=0.3
             )
-            st.plotly_chart(fig_top_riesgo, use_container_width=True)
+            fig_sobre_stock_pie.update_traces(textinfo='percent+label', textposition='inside')
+            fig_sobre_stock_pie.update_layout(
+                height=400,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+            )
+            st.plotly_chart(fig_sobre_stock_pie, use_container_width=True)
+        else:
+            st.info("No hay productos en estado SOBRE STOCK")
     
-    # ================== GRÁFICOS ADICIONALES ==================
-    st.markdown("### 📋 Gráficos de Distribución")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Distribución de días de inventario
-        fig_distribucion_dias = px.histogram(
-            resultados,
-            x='dias_inventario',
-            nbins=20,
-            title="📊 Distribución de Días de Inventario",
-            labels={'dias_inventario': 'Días de Inventario'},
-            color_discrete_sequence=['#3366CC']
+    with col3:
+        # 3. Distribución completa por Estado
+        fig_distribucion_pie = px.pie(
+            values=conteo_estados.values,
+            names=conteo_estados.index,
+            title="🏷️ Distribución por Estado",
+            color=conteo_estados.index,
+            color_discrete_map={
+                'QUIEBRE': '#FF6B6B',
+                'SOBRE STOCK': '#FFA500', 
+                'OPTIMO': '#00D4AA'
+            },
+            hole=0.3
         )
-        fig_distribucion_dias.add_vline(x=90, line_dash="dash", line_color="red", annotation_text="Límite Sobre Stock")
-        fig_distribucion_dias.add_vline(x=15, line_dash="dash", line_color="orange", annotation_text="Límite Quiebre")
-        st.plotly_chart(fig_distribucion_dias, use_container_width=True)
-    
-    with col2:
-        # Gráfico de dispersión: Stock vs Consumo Predicho
-        fig_dispersion = px.scatter(
-            resultados,
-            x='consumo_predicho',
-            y='saldo final',
-            size='cantidad_comprar',
-            color='prioridad',
-            title="🎯 Relación: Consumo Predicho vs Stock Actual",
-            labels={'consumo_predicho': 'Consumo Predicho', 'saldo final': 'Stock Actual'},
-            color_discrete_map={'ALTA': '#FF4B4B', 'MEDIA': '#FFA500', 'BAJA': '#00D4AA'},
-            hover_data=['id_insumo']
+        fig_distribucion_pie.update_traces(
+            textinfo='percent+label', 
+            textposition='inside',
+            textfont_size=14
         )
-        st.plotly_chart(fig_dispersion, use_container_width=True)
+        fig_distribucion_pie.update_layout(
+            height=400,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5,
+                font=dict(size=12)
+            )
+        )
+        st.plotly_chart(fig_distribucion_pie, use_container_width=True)
+    
+    # SEGUNDA FILA: DIAGRAMAS DE BARRA
+    st.markdown("### 📊 Segunda Fila: Diagramas de Barras (Cantidades)")
+    
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        # 4. Barras: Cantidad de QUIEBRES
+        if 'QUIEBRE' in conteo_estados:
+            fig_quiebre_bar = px.bar(
+                x=['En Quiebre', 'No en Quiebre'],
+                y=[conteo_estados['QUIEBRE'], total_productos - conteo_estados['QUIEBRE']],
+                title=f"⚠️ Cantidad en Quiebre: {conteo_estados['QUIEBRE']:,}",
+                labels={'x': 'Estado', 'y': 'Cantidad'},
+                color=['En Quiebre', 'No en Quiebre'],
+                color_discrete_map={'En Quiebre': '#FF6B6B', 'No en Quiebre': '#4ECDC4'},
+                text_auto=True
+            )
+            fig_quiebre_bar.update_traces(
+                texttemplate='%{y:,}',
+                textposition='outside'
+            )
+            fig_quiebre_bar.update_layout(
+                height=400,
+                xaxis_title="",
+                yaxis_title="Cantidad de Productos",
+                showlegend=False
+            )
+            fig_quiebre_bar.update_yaxes(range=[0, total_productos * 1.1])
+            st.plotly_chart(fig_quiebre_bar, use_container_width=True)
+    
+    with col5:
+        # 5. Barras: Cantidad de SOBRE STOCK
+        if 'SOBRE STOCK' in conteo_estados:
+            fig_sobre_stock_bar = px.bar(
+                x=['Sobre Stock', 'No Sobre Stock'],
+                y=[conteo_estados['SOBRE STOCK'], total_productos - conteo_estados['SOBRE STOCK']],
+                title=f"📦 Cantidad Sobre Stock: {conteo_estados['SOBRE STOCK']:,}",
+                labels={'x': 'Estado', 'y': 'Cantidad'},
+                color=['Sobre Stock', 'No Sobre Stock'],
+                color_discrete_map={'Sobre Stock': '#FFA500', 'No Sobre Stock': '#00D4AA'},
+                text_auto=True
+            )
+            fig_sobre_stock_bar.update_traces(
+                texttemplate='%{y:,}',
+                textposition='outside'
+            )
+            fig_sobre_stock_bar.update_layout(
+                height=400,
+                xaxis_title="",
+                yaxis_title="Cantidad de Productos",
+                showlegend=False
+            )
+            fig_sobre_stock_bar.update_yaxes(range=[0, total_productos * 1.1])
+            st.plotly_chart(fig_sobre_stock_bar, use_container_width=True)
+    
+    with col6:
+        # 6. Barras: Distribución completa
+        fig_distribucion_bar = px.bar(
+            x=conteo_estados.index,
+            y=conteo_estados.values,
+            title="📊 Cantidad por Estado",
+            labels={'x': 'Estado', 'y': 'Cantidad'},
+            color=conteo_estados.index,
+            color_discrete_map={
+                'QUIEBRE': '#FF6B6B',
+                'SOBRE STOCK': '#FFA500', 
+                'OPTIMO': '#00D4AA'
+            },
+            text_auto=True
+        )
+        fig_distribucion_bar.update_traces(
+            texttemplate='%{y:,}',
+            textposition='outside'
+        )
+        fig_distribucion_bar.update_layout(
+            height=400,
+            xaxis_title="Estado del Inventario",
+            yaxis_title="Cantidad de Productos",
+            showlegend=False,
+            xaxis={'categoryorder':'total descending'}
+        )
+        st.plotly_chart(fig_distribucion_bar, use_container_width=True)
     
     # ================== TABLAS DETALLADAS ==================
-    st.markdown("### 📋 Listados Detallados")
+    st.subheader("📋 Listados Detallados por Estado")
     
-    tab1, tab2, tab3 = st.tabs(["📦 SKUs con Sobre Stock", "⚠️ SKUs con Riesgo de Quiebre", "📊 Resumen General"])
+    # Añadir pestaña de Análisis de Valor si tenemos los datos necesarios
+    if 'inventario_actual' in resultados.columns and 'precio_unitario' in resultados.columns:
+        # Calcular valor del inventario
+        resultados['valor_inventario'] = resultados['inventario_actual'] * resultados['precio_unitario']
+        valor_por_estado = resultados.groupby('estado')['valor_inventario'].sum().sort_values(ascending=False)
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["📦 Sobre Stock", "⚠️ En Quiebre", "✅ Óptimos", "💰 Valor del Inventario"])
+    else:
+        tab1, tab2, tab3 = st.tabs(["📦 Sobre Stock", "⚠️ En Quiebre", "✅ Óptimos"])
     
     with tab1:
-        if not sobre_stock.empty:
-            st.dataframe(
-                sobre_stock[['id_insumo', 'dias_inventario', 'saldo final', 'consumo_predicho', 'prioridad']].sort_values('dias_inventario', ascending=False),
-                use_container_width=True
-            )
+        if 'SOBRE STOCK' in conteo_estados:
+            sobre_stock_df = resultados[resultados['estado'] == 'SOBRE STOCK']
+            columnas = ['producto_estado', 'descripcion', 'inventario_actual', 'precio_unitario']
+            columnas = [c for c in columnas if c in sobre_stock_df.columns]
             
-            # Exportar sobre stock
-            csv_sobre = sobre_stock.to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Lista de Sobre Stock",
-                data=csv_sobre,
-                file_name="sobre_stock_analisis.csv",
-                mime="text/csv"
+            st.dataframe(
+                sobre_stock_df[columnas].head(50),
+                use_container_width=True,
+                height=400
             )
         else:
-            st.info("No hay SKUs con sobre stock detectados")
+            st.info("No hay productos en estado SOBRE STOCK")
     
     with tab2:
-        if not riesgo_quiebre.empty:
-            st.dataframe(
-                riesgo_quiebre[['id_insumo', 'dias_inventario', 'saldo final', 'consumo_predicho', 'prioridad']].sort_values('dias_inventario'),
-                use_container_width=True
-            )
+        if 'QUIEBRE' in conteo_estados:
+            quiebre_df = resultados[resultados['estado'] == 'QUIEBRE']
+            columnas = ['producto_estado', 'descripcion', 'inventario_actual', 'precio_unitario', 'consumo_predicho']
+            columnas = [c for c in columnas if c in quiebre_df.columns]
             
-            # Exportar riesgo quiebre
-            csv_riesgo = riesgo_quiebre.to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Lista de Riesgo Quiebre",
-                data=csv_riesgo,
-                file_name="riesgo_quiebre_analisis.csv",
-                mime="text/csv"
+            st.dataframe(
+                quiebre_df[columnas].head(50),
+                use_container_width=True,
+                height=400
             )
         else:
-            st.info("No hay SKUs con riesgo de quiebre detectados")
+            st.info("No hay productos en estado QUIEBRE")
     
     with tab3:
-        # Métricas resumen
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("SKUs Analizados", f"{len(resultados):,}")
-        
-        with col2:
-            st.metric("Con Sobre Stock", f"{len(sobre_stock):,}")
-        
-        with col3:
-            st.metric("Riesgo Quiebre", f"{len(riesgo_quiebre):,}")
-        
-        with col4:
-            skus_optimos = len(resultados) - len(sobre_stock) - len(riesgo_quiebre)
-            st.metric("Inventario Óptimo", f"{skus_optimos:,}")
-        
-        # Gráfico de resumen general
-        fig_resumen = px.bar(
-            x=['Sobre Stock', 'Riesgo Quiebre', 'Óptimo'],
-            y=[len(sobre_stock), len(riesgo_quiebre), skus_optimos],
-            title="📈 Resumen General del Estado del Inventario",
-            labels={'x': 'Estado', 'y': 'Cantidad de SKUs'},
-            color=['Sobre Stock', 'Riesgo Quiebre', 'Óptimo'],
-            color_discrete_map={'Sobre Stock': '#FF6B6B', 'Riesgo Quiebre': '#FFA500', 'Óptimo': '#00D4AA'}
-        )
-        st.plotly_chart(fig_resumen, use_container_width=True)
+        if 'OPTIMO' in conteo_estados:
+            optimo_df = resultados[resultados['estado'] == 'OPTIMO']
+            columnas = ['producto_estado', 'descripcion', 'inventario_actual', 'precio_unitario']
+            columnas = [c for c in columnas if c in optimo_df.columns]
+            
+            st.dataframe(
+                optimo_df[columnas].head(50),
+                use_container_width=True,
+                height=400
+            )
+        else:
+            st.info("No hay productos en estado OPTIMO")
+    
+    # Pestaña de Valor del Inventario (solo si tenemos los datos)
+    if 'inventario_actual' in resultados.columns and 'precio_unitario' in resultados.columns:
+        with tab4:
+            st.subheader("💰 Análisis de Valor del Inventario")
+            
+            # Mostrar métricas resumen
+            st.info(f"""
+            **📊 Resumen de Valor del Inventario:**
+            - **Total valor inventario:** S/{valor_por_estado.sum():,.2f}
+            - **Valor promedio por producto:** S/{resultados['valor_inventario'].mean():,.2f}
+            - **Producto con mayor valor:** S/{resultados['valor_inventario'].max():,.2f}
+            - **Producto con menor valor:** S/{resultados['valor_inventario'].min():,.2f}
+            """)
+            
+            col7, col8 = st.columns(2)
+            
+            with col7:
+                # Gráfico de torta para valor
+                fig_valor_pie = px.pie(
+                    values=valor_por_estado.values,
+                    names=valor_por_estado.index,
+                    title="💵 Distribución del Valor del Inventario",
+                    color=valor_por_estado.index,
+                    color_discrete_map={
+                        'QUIEBRE': '#FF6B6B',
+                        'SOBRE STOCK': '#FFA500', 
+                        'OPTIMO': '#00D4AA'
+                    },
+                    hole=0.3
+                )
+                fig_valor_pie.update_traces(
+                    textinfo='percent+label',
+                    textposition='inside',
+                    textfont_size=12,
+                    hovertemplate='<b>%{label}</b><br>Valor: S/%{value:,.2f}<br>%{percent}'
+                )
+                fig_valor_pie.update_layout(height=450)
+                st.plotly_chart(fig_valor_pie, use_container_width=True)
+            
+            with col8:
+                # Gráfico de barras para valor
+                fig_valor_bar = px.bar(
+                    x=valor_por_estado.index,
+                    y=valor_por_estado.values,
+                    title="📈 Valor Total por Estado (S/)",
+                    labels={'x': 'Estado', 'y': 'Valor en Soles'},
+                    color=valor_por_estado.index,
+                    color_discrete_map={
+                        'QUIEBRE': '#FF6B6B',
+                        'SOBRE STOCK': '#FFA500', 
+                        'OPTIMO': '#00D4AA'
+                    },
+                    text_auto=True
+                )
+                fig_valor_bar.update_traces(
+                    texttemplate='S/%{y:,.0f}',
+                    textposition='outside'
+                )
+                fig_valor_bar.update_layout(
+                    height=450,
+                    xaxis_title="Estado del Inventario",
+                    yaxis_title="Valor Total (S/)",
+                    showlegend=False,
+                    xaxis={'categoryorder':'total descending'}
+                )
+                st.plotly_chart(fig_valor_bar, use_container_width=True)
+            
+            # Mostrar tabla con los productos de mayor valor
+            st.markdown("### 🏆 Productos con Mayor Valor en Inventario")
+            
+            # Ordenar por valor descendente
+            productos_mayor_valor = resultados.sort_values('valor_inventario', ascending=False)
+            
+            # Seleccionar columnas para mostrar
+            columnas_valor = ['producto_estado', 'descripcion', 'inventario_actual', 
+                            'precio_unitario', 'valor_inventario', 'estado']
+            columnas_valor = [c for c in columnas_valor if c in productos_mayor_valor.columns]
+            
+            st.dataframe(
+                productos_mayor_valor[columnas_valor].head(20),
+                use_container_width=True,
+                height=400
+            )

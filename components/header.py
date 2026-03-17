@@ -188,4 +188,3 @@ def mostrar_barra_usuario():
             st.session_state.username = None
             st.rerun()
     
-    st.markdown("---")

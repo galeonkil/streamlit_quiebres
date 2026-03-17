@@ -101,6 +101,7 @@ def crear_sidebar():
         "📊 Dashboard": "dashboard",
         "📈 Reportes": "reportes",
         "🔍 Registros": "registros",
+        "📅 Planificación": "planificacion",
         "⚙️ Configuración": "configuracion"
     }
 
